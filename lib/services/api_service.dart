@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import '../models/chapter_models.dart';
 
 class ApiService {
-  static const String baseUrl = 'http://10.1.212.210:5000/api';
+  static const String baseUrl = 'http://localhost:6000/api';
 
   Future<ChapterResponse> getChapters() async {
     try {
