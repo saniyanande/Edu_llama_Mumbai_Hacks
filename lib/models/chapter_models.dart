@@ -41,6 +41,7 @@ class ChatResponse {
   final String question;
   final String response;
   final double timeTaken;
+  final String sessionId; // E1: conversation memory session ID
 
   ChatResponse({
     required this.status,
@@ -48,15 +49,17 @@ class ChatResponse {
     required this.question,
     required this.response,
     required this.timeTaken,
+    required this.sessionId,
   });
 
   factory ChatResponse.fromJson(Map<String, dynamic> json) {
     return ChatResponse(
-      status: json['status'] ?? '',
-      chapter: json['chapter'] ?? '',
-      question: json['question'] ?? '',
-      response: json['response'] ?? '',
+      status:    json['status'] ?? '',
+      chapter:   json['chapter'] ?? '',
+      question:  json['question'] ?? '',
+      response:  json['response'] ?? '',
       timeTaken: (json['time_taken'] ?? 0.0).toDouble(),
+      sessionId: json['session_id'] ?? '',
     );
   }
 }
