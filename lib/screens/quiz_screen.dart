@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/quiz_models.dart';
 import '../services/api_service.dart';
 
@@ -33,6 +35,25 @@ class _QuizScreenState extends State<QuizScreen> {
     });
   }
 
+  // Save this attempt's score to SharedPreferences
+  Future<void> _saveScore(int total) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'quiz_score_${widget.chapter}';
+    final existing = prefs.getString(key);
+    final List<Map<String, dynamic>> history = existing != null
+        ? List<Map<String, dynamic>>.from(
+            (json.decode(existing) as List).map((e) => Map<String, dynamic>.from(e)))
+        : [];
+
+    history.add({
+      'score': _score,
+      'total': total,
+      'date': DateTime.now().toIso8601String(),
+    });
+
+    await prefs.setString(key, json.encode(history));
+  }
+
   void _next(List<QuizQuestion> questions) {
     if (_current < questions.length - 1) {
       setState(() {
@@ -41,11 +62,47 @@ class _QuizScreenState extends State<QuizScreen> {
         _answered = false;
       });
     } else {
+      _saveScore(questions.length); // persist before showing dialog
+      final pct = (_score / questions.length * 100).toStringAsFixed(0);
       showDialog(
         context: context,
+        barrierDismissible: false,
         builder: (_) => AlertDialog(
-          title: const Text('Quiz Complete! 🎉'),
-          content: Text('Your score: $_score / ${questions.length}'),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Quiz Complete! 🎉', textAlign: TextAlign.center),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$_score / ${questions.length}',
+                style: const TextStyle(
+                    fontSize: 40, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              Text(
+                '$pct% correct',
+                style: TextStyle(
+                  fontSize: 18,
+                  color: int.parse(pct) >= 80
+                      ? Colors.green
+                      : int.parse(pct) >= 50
+                          ? Colors.orange
+                          : Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                int.parse(pct) >= 80
+                    ? 'Excellent work! 🌟'
+                    : int.parse(pct) >= 50
+                        ? 'Good effort! Keep practising.'
+                        : 'Keep studying — you\'ll get there!',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ],
+          ),
           actions: [
             TextButton(
               onPressed: () {
@@ -94,7 +151,6 @@ class _QuizScreenState extends State<QuizScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Progress indicator
                 LinearProgressIndicator(
                   value: (_current + 1) / questions.length,
                   backgroundColor: Colors.blue[100],
@@ -102,16 +158,16 @@ class _QuizScreenState extends State<QuizScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'Question ${_current + 1} of ${questions.length}  •  Score: $_score',
+                  'Q${_current + 1} / ${questions.length}  •  Score: $_score',
                   style: const TextStyle(color: Colors.grey, fontSize: 13),
                 ),
                 const SizedBox(height: 12),
                 Text(
                   q.question,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 24),
-                // Answer options
                 ...q.options.map((opt) {
                   Color bgColor = Colors.white;
                   if (_answered) {
@@ -134,8 +190,7 @@ class _QuizScreenState extends State<QuizScreen> {
                   );
                 }),
                 if (_answered) ...[
-                  const SizedBox(height: 20),
-                  // Explanation of correct answer
+                  const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -145,12 +200,10 @@ class _QuizScreenState extends State<QuizScreen> {
                     child: Text(
                       'Correct answer: ${q.answer}',
                       style: TextStyle(
-                        color: Colors.blue[800],
-                        fontWeight: FontWeight.bold,
-                      ),
+                          color: Colors.blue[800], fontWeight: FontWeight.bold),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 14),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -159,18 +212,16 @@ class _QuizScreenState extends State<QuizScreen> {
                         backgroundColor: Colors.blue,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
+                            borderRadius: BorderRadius.circular(10)),
                       ),
                       child: Text(
                         _current < questions.length - 1
                             ? 'Next Question →'
                             : 'See Final Score',
                         style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold),
                       ),
                     ),
                   ),

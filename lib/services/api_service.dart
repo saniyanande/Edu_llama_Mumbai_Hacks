@@ -104,9 +104,13 @@ class ApiService {
       );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        return (data['questions'] as List)
-            .map((q) => QuizQuestion.fromJson(q))
-            .toList();
+        return (data['questions'] as List).map((q) {
+          // LLM sometimes wraps each question as a JSON string — decode it first
+          final map = q is String
+              ? json.decode(q) as Map<String, dynamic>
+              : q as Map<String, dynamic>;
+          return QuizQuestion.fromJson(map);
+        }).toList();
       }
       throw Exception('Failed to generate quiz');
     } catch (e) {

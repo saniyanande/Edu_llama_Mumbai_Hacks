@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:shimmer/shimmer.dart'; // E8: shimmer loading skeletons
+import 'package:shimmer/shimmer.dart';
 import '../models/chapter_models.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
+import 'score_board_screen.dart'; // score tracking
 
 class ChaptersScreen extends StatefulWidget {
   @override
@@ -25,6 +26,17 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
       appBar: AppBar(
         title: const Text('Science Chapters'),
         backgroundColor: Colors.blue,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.leaderboard),
+            tooltip: 'My Scores',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const ScoreBoardScreen()),
+            ),
+          ),
+        ],
       ),
       body: FutureBuilder<ChapterResponse>(
         future: _chaptersFuture,
