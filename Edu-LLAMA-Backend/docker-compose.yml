@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "6000:6000"
+    volumes:
+      - ./science_directory:/app/science_directory
+      - chroma_data:/app/chroma_store
+    environment:
+      - SCIENCE_DIR=/app/science_directory
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+      - PORT=6000
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+  ollama_models:

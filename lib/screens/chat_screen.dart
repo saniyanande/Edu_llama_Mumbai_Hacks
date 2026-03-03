@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // E7: chat persistence
 import '../services/api_service.dart';
 import 'quiz_screen.dart';
 
@@ -17,7 +19,14 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final List<Message> _messages = [];
   bool _isLoading = false;
-  String? _sessionId; // E1: tracks conversation session for memory
+  String? _sessionId;                // E1: conversation memory
+  late SharedPreferences _prefs;     // E7: local persistence
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory(); // E7: restore saved chat on reopen
+  }
 
   @override
   void dispose() {
@@ -25,6 +34,41 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.dispose();
     super.dispose();
   }
+
+  // ── E7: Load saved chat history from device storage ───────────────────────
+
+  Future<void> _loadHistory() async {
+    _prefs = await SharedPreferences.getInstance();
+    final saved = _prefs.getString('chat_${widget.chapter}');
+    if (saved != null) {
+      final list = json.decode(saved) as List;
+      setState(() {
+        _messages.addAll(list.map((m) => Message(
+          text:      m['text'] as String,
+          isUser:    m['isUser'] as bool,
+          timestamp: DateTime.parse(m['timestamp'] as String),
+        )));
+      });
+    }
+    // Restore session so memory continues from last session
+    _sessionId = _prefs.getString('session_${widget.chapter}');
+  }
+
+  Future<void> _saveHistory() async {
+    await _prefs.setString(
+      'chat_${widget.chapter}',
+      json.encode(_messages.map((m) => {
+        'text':      m.text,
+        'isUser':    m.isUser,
+        'timestamp': m.timestamp.toIso8601String(),
+      }).toList()),
+    );
+    if (_sessionId != null) {
+      await _prefs.setString('session_${widget.chapter}', _sessionId!);
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -38,42 +82,32 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // E2: Streaming version — fills the AI bubble token by token
+  // ── E2: Streaming send — fills the AI bubble token by token ───────────────
+
   Future<void> _sendQuestion() async {
     final question = _questionController.text.trim();
     if (question.isEmpty || _isLoading) return;
 
     setState(() {
-      // Add user message
-      _messages.add(Message(
-        text: question,
-        isUser: true,
-        timestamp: DateTime.now(),
-      ));
-      // Add empty AI bubble — we'll fill it word by word
-      _messages.add(Message(
-        text: '',
-        isUser: false,
-        timestamp: DateTime.now(),
-      ));
+      _messages.add(Message(text: question, isUser: true, timestamp: DateTime.now()));
+      _messages.add(Message(text: '', isUser: false, timestamp: DateTime.now()));
       _isLoading = true;
     });
     _questionController.clear();
     _scrollToBottom();
 
     try {
-      // E2: Stream question — tokens arrive one by one
       final stream = _apiService.streamQuestion(
         widget.chapter,
         question,
-        sessionId: _sessionId, // E1: send session ID for memory
+        sessionId: _sessionId, // E1: continue existing conversation
       );
 
       await for (final token in stream) {
         setState(() {
           final last = _messages.last;
           _messages[_messages.length - 1] = Message(
-            text: last.text + token,  // append each token to the bubble
+            text: last.text + token,
             isUser: false,
             timestamp: last.timestamp,
           );
@@ -91,8 +125,11 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     } finally {
       setState(() => _isLoading = false);
+      await _saveHistory(); // E7: persist after every AI reply
     }
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -101,7 +138,7 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Text('Chat - ${widget.chapter}'),
         backgroundColor: Colors.blue,
         actions: [
-          // E4: Quiz button — navigates to AI-generated MCQ quiz
+          // E4: Open quiz screen
           IconButton(
             icon: const Icon(Icons.quiz),
             tooltip: 'Quiz Me',
@@ -112,7 +149,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           ),
-          // E1: New Chat button — clears session and history
+          // E1 + E7: Clear session and saved history
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'New Chat',
@@ -120,6 +157,9 @@ class _ChatScreenState extends State<ChatScreen> {
               if (_sessionId != null) {
                 await _apiService.clearSession(_sessionId!);
               }
+              // E7: remove from disk too
+              await _prefs.remove('chat_${widget.chapter}');
+              await _prefs.remove('session_${widget.chapter}');
               setState(() {
                 _messages.clear();
                 _sessionId = null;
@@ -136,26 +176,22 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.all(16),
               itemCount: _messages.length,
               itemBuilder: (context, index) {
-                final message = _messages[index];
-                return MessageBubble(message: message);
+                return MessageBubble(message: _messages[index]);
               },
             ),
           ),
+          // E8: Linear streaming progress bar (replaces circular spinner)
           if (_isLoading)
             const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: LinearProgressIndicator(),  // streaming progress bar
+              padding: EdgeInsets.symmetric(horizontal: 0),
+              child: LinearProgressIndicator(),
             ),
           Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: Colors.white,
               boxShadow: [
-                BoxShadow(
-                  color: Colors.black12,
-                  offset: Offset(0, -2),
-                  blurRadius: 4,
-                ),
+                BoxShadow(color: Colors.black12, offset: Offset(0, -2), blurRadius: 4),
               ],
             ),
             child: Row(
@@ -169,20 +205,19 @@ class _ChatScreenState extends State<ChatScreen> {
                         borderRadius: BorderRadius.circular(24),
                       ),
                       contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
+                        horizontal: 16, vertical: 8),
                     ),
+                    // E8: disable keyboard submit while loading
                     onSubmitted: _isLoading ? null : (_) => _sendQuestion(),
                   ),
                 ),
                 const SizedBox(width: 8),
+                // E8: send button goes grey while AI is responding
                 FloatingActionButton(
-                  // Disabled (grey) while streaming is active
                   onPressed: _isLoading ? null : _sendQuestion,
                   backgroundColor: _isLoading ? Colors.grey : Colors.blue,
-                  child: const Icon(Icons.send),
                   mini: true,
+                  child: const Icon(Icons.send),
                 ),
               ],
             ),
@@ -192,6 +227,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 }
+
+// ── Data classes ──────────────────────────────────────────────────────────────
 
 class Message {
   final String text;
@@ -210,10 +247,7 @@ class Message {
 class MessageBubble extends StatelessWidget {
   final Message message;
 
-  const MessageBubble({
-    Key? key,
-    required this.message,
-  }) : super(key: key);
+  const MessageBubble({Key? key, required this.message}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -236,11 +270,10 @@ class MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Show a spinner inside the bubble if still streaming (text is empty)
+            // Show spinner in empty bubble while first tokens arrive
             if (message.text.isEmpty && !message.isUser)
               const SizedBox(
-                width: 20,
-                height: 20,
+                width: 20, height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             else

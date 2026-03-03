@@ -3,9 +3,11 @@ import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import '../models/chapter_models.dart';
 import '../models/quiz_models.dart';
+import '../config.dart'; // E6: dynamic config
 
 class ApiService {
-  static const String baseUrl = 'http://localhost:6000/api';
+  // E6: reads from --dart-define=BASE_URL=http://IP:6000/api at build time
+  static String get baseUrl => AppConfig.baseUrl;
   final Dio _dio = Dio();
 
   // ── Chapters ──────────────────────────────────────────────────────────────

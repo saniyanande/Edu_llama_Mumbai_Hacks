@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shimmer/shimmer.dart'; // E8: shimmer loading skeletons
 import '../models/chapter_models.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
@@ -23,16 +24,73 @@ class _ChaptersScreenState extends State<ChaptersScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Science Chapters'),
-        backgroundColor:  Colors.blue,
+        backgroundColor: Colors.blue,
       ),
       body: FutureBuilder<ChapterResponse>(
         future: _chaptersFuture,
         builder: (context, snapshot) {
+
+          // E8: Shimmer skeleton grid while loading
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          } else if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          } else if (!snapshot.hasData) {
+            return GridView.builder(
+              padding: const EdgeInsets.all(16),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 16,
+                mainAxisSpacing: 16,
+                childAspectRatio: 0.85,
+              ),
+              itemCount: 6,
+              itemBuilder: (_, __) => Shimmer.fromColors(
+                baseColor: Colors.grey[300]!,
+                highlightColor: Colors.grey[100]!,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          // E8: Error state with retry button + wifi-off icon
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.wifi_off, size: 64, color: Colors.grey),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Could not connect to the server.',
+                      style: TextStyle(fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Make sure the backend is running on port 6000.',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+                      onPressed: () => setState(() {
+                        _chaptersFuture = _apiService.getChapters();
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          if (!snapshot.hasData) {
             return const Center(child: Text('No chapters available'));
           }
 
@@ -101,15 +159,11 @@ class ChapterCard extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.book,
-                size: 48,
-                color: Colors.white,
-              ),
-              SizedBox(height: 16),
+              const Icon(Icons.book, size: 48, color: Colors.white),
+              const SizedBox(height: 16),
               Text(
                 chapter,
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: Colors.white,

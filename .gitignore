@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Edu-Llama backend — never commit secrets or generated data
+Edu-LLAMA-Backend/.env
+Edu-LLAMA-Backend/chroma_store/
+Edu-LLAMA-Backend/__pycache__/
+Edu-LLAMA-Backend/venv/
+Edu-LLAMA-Backend/*.pyc
