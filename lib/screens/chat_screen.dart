@@ -7,13 +7,14 @@ import 'quiz_screen.dart';
 class ChatScreen extends StatefulWidget {
   final String grade;
   final String subject;
+  // chapter is now optional — defaults to empty (subject-wide chat)
   final String chapter;
 
   const ChatScreen({
     Key? key,
     required this.grade,
     required this.subject,
-    required this.chapter,
+    this.chapter = '',   // no chapter = whole-subject AI chat
   }) : super(key: key);
 
   @override
@@ -29,9 +30,11 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _sessionId;
   late SharedPreferences _prefs;
 
-  // Unique storage key scoped to grade + subject + chapter
   String get _storageKey =>
-      '${widget.grade}__${widget.subject}__${widget.chapter}';
+      '${widget.grade}__${widget.subject}';
+
+  String get _subjectLabel => widget.subject.replaceAll('_', ' ');
+  String get _gradeLabel   => widget.grade.replaceAll('Grade', 'Grade ');
 
   @override
   void initState() {
@@ -78,8 +81,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -92,7 +93,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // ── E2: Streaming send ────────────────────────────────────────────────────
+  // ── E2: Streaming ─────────────────────────────────────────────────────────
 
   Future<void> _sendQuestion() async {
     final question = _questionController.text.trim();
@@ -112,7 +113,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final stream = _apiService.streamQuestion(
         widget.grade,
         widget.subject,
-        widget.chapter,
+        widget.chapter,    // empty string = subject-wide
         question,
         sessionId: _sessionId,
       );
@@ -143,19 +144,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
-
-  String get _subjectLabel => widget.subject.replaceAll('_', ' ');
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.chapter,
-            style: const TextStyle(fontSize: 14)),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_subjectLabel,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(_gradeLabel,
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
+          ],
+        ),
         backgroundColor: Colors.blue,
         actions: [
-          // E4: Quiz button
+          // Quiz Me button
           IconButton(
             icon: const Icon(Icons.quiz),
             tooltip: 'Quiz Me',
@@ -165,12 +169,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 builder: (_) => QuizScreen(
                   grade:   widget.grade,
                   subject: widget.subject,
-                  chapter: widget.chapter,
                 ),
               ),
             ),
           ),
-          // E1 + E7: New chat clears backend session + local history
+          // New Chat button
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'New Chat',
@@ -190,28 +193,30 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          // Breadcrumb bar
-          Container(
-            width: double.infinity,
-            color: Colors.blue[50],
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: Text(
-              '${widget.grade.replaceAll('G', 'G ')} › $_subjectLabel',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.blue[700],
-                  fontWeight: FontWeight.w500),
-            ),
-          ),
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) =>
-                  MessageBubble(message: _messages[index]),
-            ),
+            child: _messages.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.chat_bubble_outline,
+                            size: 64, color: Colors.grey[300]),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Ask anything about $_subjectLabel!',
+                          style: TextStyle(
+                              fontSize: 16, color: Colors.grey[500]),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) =>
+                        MessageBubble(message: _messages[index]),
+                  ),
           ),
           if (_isLoading) const LinearProgressIndicator(),
           Container(
@@ -239,6 +244,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     onSubmitted:
                         _isLoading ? null : (_) => _sendQuestion(),
+                    maxLines: null,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -257,8 +263,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 }
-
-// ── Data models ───────────────────────────────────────────────────────────────
 
 class Message {
   final String text;
@@ -286,7 +290,7 @@ class MessageBubble extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
           color: message.isUser
               ? Colors.blue
@@ -296,15 +300,14 @@ class MessageBubble extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
         ),
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (message.text.isEmpty && !message.isUser)
               const SizedBox(
-                width: 20,
-                height: 20,
+                width: 20, height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             else
@@ -315,7 +318,8 @@ class MessageBubble extends StatelessWidget {
                       ? Colors.white
                       : message.isError
                           ? Colors.red[900]
-                          : Colors.black,
+                          : Colors.black87,
+                  fontSize: 15,
                 ),
               ),
             const SizedBox(height: 4),
@@ -323,10 +327,8 @@ class MessageBubble extends StatelessWidget {
               '${message.timestamp.hour}:'
               '${message.timestamp.minute.toString().padLeft(2, '0')}',
               style: TextStyle(
-                fontSize: 12,
-                color: message.isUser
-                    ? Colors.white70
-                    : Colors.black54,
+                fontSize: 11,
+                color: message.isUser ? Colors.white60 : Colors.black38,
               ),
             ),
           ],

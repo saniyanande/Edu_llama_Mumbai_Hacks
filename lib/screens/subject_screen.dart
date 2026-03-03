@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
-import 'chapters_screen.dart';
+import 'chat_screen.dart';
 
 class SubjectScreen extends StatefulWidget {
   final String grade;
@@ -21,34 +21,26 @@ class _SubjectScreenState extends State<SubjectScreen> {
   }
 
   static const _subjectMeta = {
-    'Science':        {'icon': Icons.science,   'color': Color(0xFF4CAF50)},
-    'Maths':          {'icon': Icons.calculate,  'color': Color(0xFF2196F3)},
-    'English':        {'icon': Icons.menu_book,  'color': Color(0xFF9C27B0)},
-    'Social_Science': {'icon': Icons.public,     'color': Color(0xFFFF9800)},
+    'Science':        {'icon': Icons.science,  'color': Color(0xFF4CAF50)},
+    'Maths':          {'icon': Icons.calculate, 'color': Color(0xFF2196F3)},
+    'English':        {'icon': Icons.menu_book, 'color': Color(0xFF9C27B0)},
+    'Social_Science': {'icon': Icons.public,    'color': Color(0xFFFF9800)},
   };
 
   String _label(String key) => key.replaceAll('_', ' ');
+  IconData _icon(String s)  =>
+      (_subjectMeta[s]?['icon'] as IconData?) ?? Icons.book;
+  Color _color(String s)    =>
+      (_subjectMeta[s]?['color'] as Color?) ?? Colors.blue;
 
-  IconData _icon(String subject) =>
-      (_subjectMeta[subject]?['icon'] as IconData?) ?? Icons.book;
-
-  Color _color(String subject) =>
-      (_subjectMeta[subject]?['color'] as Color?) ?? Colors.blue;
-
-  String _gradeLabel(String g) {
-    switch (g) {
-      case 'Grade6': return 'Grade 6';
-      case 'Grade7': return 'Grade 7';
-      case 'Grade8': return 'Grade 8';
-      default:       return g;
-    }
-  }
+  String _gradeLabel(String g) =>
+      g.replaceAll('Grade', 'Grade ');
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${_gradeLabel(widget.grade)} — Subjects'),
+        title: Text('${_gradeLabel(widget.grade)} — Choose Subject'),
         backgroundColor: Colors.blue,
       ),
       body: FutureBuilder<List<String>>(
@@ -72,12 +64,12 @@ class _SubjectScreenState extends State<SubjectScreen> {
           final subjects = snap.data ?? [];
 
           return GridView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(24),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 2,
-              crossAxisSpacing: 16,
-              mainAxisSpacing: 16,
-              childAspectRatio: 1.05,
+              crossAxisSpacing: 20,
+              mainAxisSpacing: 20,
+              childAspectRatio: 1.0,
             ),
             itemCount: subjects.length,
             itemBuilder: (context, index) {
@@ -86,10 +78,11 @@ class _SubjectScreenState extends State<SubjectScreen> {
                 label: _label(subject),
                 icon:  _icon(subject),
                 color: _color(subject),
+                // Tap goes DIRECTLY to ChatScreen — no chapter selection
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => ChaptersScreen(
+                    builder: (_) => ChatScreen(
                       grade:   widget.grade,
                       subject: subject,
                     ),
@@ -120,11 +113,11 @@ class _SubjectCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -132,17 +125,17 @@ class _SubjectCard extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(20),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 52, color: Colors.white),
-              const SizedBox(height: 12),
+              Icon(icon, size: 56, color: Colors.white),
+              const SizedBox(height: 14),
               Text(
                 label,
                 style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 17,
                     fontWeight: FontWeight.bold,
                     color: Colors.white),
                 textAlign: TextAlign.center,

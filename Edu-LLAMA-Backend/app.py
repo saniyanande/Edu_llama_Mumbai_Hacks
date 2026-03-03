@@ -32,7 +32,7 @@ class EduLlamaAPI:
     def __init__(self):
         # 3-level dict:  grade → subject → chapter_name → full text
         self.content: Dict[str, Dict[str, Dict[str, str]]] = {}
-        self._indexing_done = False   # set to True once ChromaDB is ready
+        self._indexing_done = False
 
         # RAG pipeline components
         self.embedder      = SentenceTransformer('all-MiniLM-L6-v2')
@@ -50,47 +50,51 @@ class EduLlamaAPI:
         Always mention the grade and subject context in your explanation when helpful.
         """
 
-        # ⚡ Index PDFs in a background thread — Flask starts immediately
-        thread = threading.Thread(target=self.load_all_content, daemon=True)
+        # Phase 1: scan directories NOW (fast — just reads filenames)
+        self._scan_dirs()
+        # Phase 2: index PDFs in background (slow)
+        thread = threading.Thread(target=self._index_pdfs, daemon=True)
         thread.start()
 
     # ── Content loading ───────────────────────────────────────────────────────
 
-    def load_all_content(self) -> None:
-        """Walk content/{Grade}/{Subject}/ and index every PDF into ChromaDB."""
+    def _scan_dirs(self) -> None:
+        """Fast sync scan: build grade/subject/chapter structure from filenames only."""
         if not os.path.exists(CONTENT_DIR):
             os.makedirs(CONTENT_DIR)
             return
-
-        existing_ids  = set(self.collection.get()['ids'])
-        total_indexed = 0
-
         for grade in sorted(os.listdir(CONTENT_DIR)):
             grade_path = os.path.join(CONTENT_DIR, grade)
             if not os.path.isdir(grade_path) or grade.startswith('.'):
                 continue
-
             self.content[grade] = {}
-
             for subject in sorted(os.listdir(grade_path)):
                 subject_path = os.path.join(grade_path, subject)
                 if not os.path.isdir(subject_path) or subject.startswith('.'):
                     continue
+                self.content[grade][subject] = {
+                    f.replace('.pdf', ''): ''
+                    for f in sorted(os.listdir(subject_path))
+                    if f.endswith('.pdf')
+                }
+        app.logger.info(
+            f"Directory scan complete: {list(self.content.keys())}")
 
-                self.content[grade][subject] = {}
-                pdf_files = sorted(
-                    f for f in os.listdir(subject_path) if f.endswith('.pdf'))
+    def _index_pdfs(self) -> None:
+        """Background thread: read PDFs and index into ChromaDB."""
+        existing_ids  = set(self.collection.get()['ids'])
+        total_indexed = 0
 
-                for pdf_file in pdf_files:
-                    chapter_name = pdf_file.replace('.pdf', '')
-                    text         = self._read_pdf(
-                                        os.path.join(subject_path, pdf_file))
+        for grade, subjects in self.content.items():
+            for subject, chapters in subjects.items():
+                subject_path = os.path.join(CONTENT_DIR, grade, subject)
+                for chapter_name in sorted(chapters.keys()):
+                    pdf_path = os.path.join(subject_path, chapter_name + '.pdf')
+                    text     = self._read_pdf(pdf_path)
                     self.content[grade][subject][chapter_name] = text
 
-                    # ChromaDB chunk IDs encode grade + subject + chapter
                     prefix = f"{grade}__{subject}__{chapter_name}"
                     chunks = self.splitter.split_text(text)
-
                     new_docs, new_ids, new_meta = [], [], []
                     for i, chunk in enumerate(chunks):
                         cid = f"{prefix}__chunk_{i}"
@@ -102,26 +106,22 @@ class EduLlamaAPI:
                                 "subject": subject,
                                 "chapter": chapter_name,
                             })
-
                     if new_docs:
                         embeddings = self.embedder.encode(new_docs).tolist()
                         self.collection.add(
-                            documents=new_docs,
-                            embeddings=embeddings,
-                            ids=new_ids,
-                            metadatas=new_meta,
-                        )
+                            documents=new_docs, embeddings=embeddings,
+                            ids=new_ids, metadatas=new_meta)
                         total_indexed += len(new_docs)
                         app.logger.info(
                             f"Indexed {len(new_docs)} chunks: "
                             f"{grade}/{subject}/{chapter_name}")
-                    else:
-                        app.logger.info(
-                            f"Already indexed: {grade}/{subject}/{chapter_name}")
 
-        app.logger.info(
-            f"✅ Content load complete — {total_indexed} new chunks indexed.")
+        app.logger.info(f"✅ Indexing done — {total_indexed} new chunks.")
         self._indexing_done = True
+
+    # Keep old name as alias for compatibility
+    def load_all_content(self): self._index_pdfs()
+
 
     def _read_pdf(self, path: str) -> str:
         try:

@@ -7,13 +7,11 @@ import '../services/api_service.dart';
 class QuizScreen extends StatefulWidget {
   final String grade;
   final String subject;
-  final String chapter;
 
   const QuizScreen({
     Key? key,
     required this.grade,
     required this.subject,
-    required this.chapter,
   }) : super(key: key);
 
   @override
@@ -28,18 +26,15 @@ class _QuizScreenState extends State<QuizScreen> {
   String? _selected;
   bool _answered = false;
 
-  // Score storage key scoped to grade + subject + chapter
   String get _scoreKey =>
-      'quiz_score_${widget.grade}__${widget.subject}__${widget.chapter}';
+      'quiz_score_${widget.grade}__${widget.subject}';
+
+  String get _subjectLabel => widget.subject.replaceAll('_', ' ');
 
   @override
   void initState() {
     super.initState();
-    _quizFuture = _api.getQuiz(
-      widget.grade,
-      widget.subject,
-      widget.chapter,
-    );
+    _quizFuture = _api.getQuiz(widget.grade, widget.subject, '');
   }
 
   void _select(List<QuizQuestion> questions, String option) {
@@ -59,7 +54,6 @@ class _QuizScreenState extends State<QuizScreen> {
             (json.decode(existing) as List)
                 .map((e) => Map<String, dynamic>.from(e)))
         : [];
-
     history.add({
       'score': _score,
       'total': total,
@@ -93,18 +87,16 @@ class _QuizScreenState extends State<QuizScreen> {
                   style: const TextStyle(
                       fontSize: 40, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.center),
-              Text(
-                '$pct% correct',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: int.parse(pct) >= 80
-                      ? Colors.green
-                      : int.parse(pct) >= 50
-                          ? Colors.orange
-                          : Colors.red,
-                ),
-              ),
+              Text('$pct% correct',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: int.parse(pct) >= 80
+                        ? Colors.green
+                        : int.parse(pct) >= 50
+                            ? Colors.orange
+                            : Colors.red,
+                  )),
               const SizedBox(height: 8),
               Text(
                 int.parse(pct) >= 80
@@ -133,10 +125,9 @@ class _QuizScreenState extends State<QuizScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final subjectLabel = widget.subject.replaceAll('_', ' ');
     return Scaffold(
       appBar: AppBar(
-        title: Text('Quiz — $subjectLabel'),
+        title: Text('$_subjectLabel Quiz'),
         backgroundColor: Colors.blue,
       ),
       body: FutureBuilder<List<QuizQuestion>>(
@@ -202,8 +193,8 @@ class _QuizScreenState extends State<QuizScreen> {
                         border: Border.all(color: Colors.blue[200]!),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child:
-                          Text(opt, style: const TextStyle(fontSize: 16)),
+                      child: Text(opt,
+                          style: const TextStyle(fontSize: 16)),
                     ),
                   );
                 }),
