@@ -3,18 +3,65 @@ import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import '../models/chapter_models.dart';
 import '../models/quiz_models.dart';
-import '../config.dart'; // E6: dynamic config
+import '../config.dart';
 
 class ApiService {
-  // E6: reads from --dart-define=BASE_URL=http://IP:6000/api at build time
   static String get baseUrl => AppConfig.baseUrl;
   final Dio _dio = Dio();
 
-  // ── Chapters ──────────────────────────────────────────────────────────────
+  // ── T3: Grades / Subjects / Chapters ─────────────────────────────────────
 
+  Future<List<String>> getGrades() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/grades'))
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return List<String>.from(data['grades'] ?? []);
+      }
+      throw Exception('Failed to load grades');
+    } catch (e) {
+      throw Exception('Error: $e');
+    }
+  }
+
+  Future<List<String>> getSubjects(String grade) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/subjects/$grade'))
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return List<String>.from(data['subjects'] ?? []);
+      }
+      throw Exception('Failed to load subjects');
+    } catch (e) {
+      throw Exception('Error: $e');
+    }
+  }
+
+  Future<List<String>> getChaptersList(String grade, String subject) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/chapters/$grade/$subject'))
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return List<String>.from(data['chapters'] ?? []);
+      }
+      throw Exception('Failed to load chapters');
+    } catch (e) {
+      throw Exception('Error: $e');
+    }
+  }
+
+  // Legacy — kept in case any old code calls it
   Future<ChapterResponse> getChapters() async {
     try {
-      final response = await http.get(Uri.parse('$baseUrl/chapters'));
+      final response = await http
+          .get(Uri.parse('$baseUrl/chapters'))
+          .timeout(const Duration(seconds: 15));
       if (response.statusCode == 200) {
         return ChapterResponse.fromJson(json.decode(response.body));
       }
@@ -24,26 +71,20 @@ class ApiService {
     }
   }
 
-  Future<Chapter> getChapterInfo(String chapterName) async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/chapters/$chapterName'));
-      if (response.statusCode == 200) {
-        return Chapter.fromJson(json.decode(response.body));
-      }
-      throw Exception('Failed to load chapter info');
-    } catch (e) {
-      throw Exception('Error: $e');
-    }
-  }
+  // ── E1: Conversation memory ───────────────────────────────────────────────
 
-  // ── E1: Conversation Memory ───────────────────────────────────────────────
-
-  /// Standard (non-streaming) question. Sends optional session_id for memory.
-  Future<ChatResponse> askQuestion(String chapter, String question,
-      {String? sessionId}) async {
+  Future<ChatResponse> askQuestion(
+    String grade,
+    String subject,
+    String chapter,
+    String question, {
+    String? sessionId,
+  }) async {
     try {
       final body = {
-        'chapter': chapter,
+        'grade':    grade,
+        'subject':  subject,
+        'chapter':  chapter,
         'question': question,
         if (sessionId != null) 'session_id': sessionId,
       };
@@ -51,7 +92,7 @@ class ApiService {
         Uri.parse('$baseUrl/ask'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(body),
-      );
+      ).timeout(const Duration(seconds: 60));
       if (response.statusCode == 200) {
         return ChatResponse.fromJson(json.decode(response.body));
       }
@@ -61,7 +102,6 @@ class ApiService {
     }
   }
 
-  /// Clears a conversation session on the backend (used by "New Chat" button).
   Future<void> clearSession(String sessionId) async {
     await http.post(
       Uri.parse('$baseUrl/session/clear'),
@@ -70,13 +110,19 @@ class ApiService {
     );
   }
 
-  // ── E2: Streaming Responses ───────────────────────────────────────────────
+  // ── E2: Streaming ─────────────────────────────────────────────────────────
 
-  /// Streams AI answer token-by-token. Use with `await for` in the UI.
-  Stream<String> streamQuestion(String chapter, String question,
-      {String? sessionId}) async* {
+  Stream<String> streamQuestion(
+    String grade,
+    String subject,
+    String chapter,
+    String question, {
+    String? sessionId,
+  }) async* {
     final body = {
-      'chapter': chapter,
+      'grade':    grade,
+      'subject':  subject,
+      'chapter':  chapter,
       'question': question,
       if (sessionId != null) 'session_id': sessionId,
     };
@@ -91,21 +137,28 @@ class ApiService {
     }
   }
 
-  // ── E4: AI Quiz ───────────────────────────────────────────────────────────
+  // ── E4: Quiz ──────────────────────────────────────────────────────────────
 
-  /// Fetches AI-generated MCQ quiz questions for a chapter.
-  Future<List<QuizQuestion>> getQuiz(String chapter,
-      {int numQuestions = 5}) async {
+  Future<List<QuizQuestion>> getQuiz(
+    String grade,
+    String subject,
+    String chapter, {
+    int numQuestions = 5,
+  }) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/quiz'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'chapter': chapter, 'num_questions': numQuestions}),
-      );
+        body: json.encode({
+          'grade':          grade,
+          'subject':        subject,
+          'chapter':        chapter,
+          'num_questions':  numQuestions,
+        }),
+      ).timeout(const Duration(seconds: 90));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         return (data['questions'] as List).map((q) {
-          // LLM sometimes wraps each question as a JSON string — decode it first
           final map = q is String
               ? json.decode(q) as Map<String, dynamic>
               : q as Map<String, dynamic>;

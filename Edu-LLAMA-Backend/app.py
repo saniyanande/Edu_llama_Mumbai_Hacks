@@ -17,358 +17,347 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "llama3.2")
+CONTENT_DIR   = os.getenv("CONTENT_DIR",
+                           os.path.join(os.path.dirname(__file__), "content"))
 
 
-class ScienceTutorAPI:
+class EduLlamaAPI:
+    """
+    Multi-grade, multi-subject AI tutor.
+    Scans content/{Grade}/{Subject}/*.pdf automatically on startup.
+    """
+
     def __init__(self):
-        self.science_dir = os.getenv(
-            "SCIENCE_DIR",
-            os.path.join(os.path.dirname(__file__), "science_directory")
-        )
-        self.chapters: Dict[str, str] = {}
+        # 3-level dict:  grade → subject → chapter_name → full text
+        self.content: Dict[str, Dict[str, Dict[str, str]]] = {}
 
-        # ── RAG components ───────────────────────────────────────────────────
-        # Local embedding model (~90 MB, downloaded once on first run)
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        # Persistent vector database saved to ./chroma_store/
+        # RAG pipeline components
+        self.embedder      = SentenceTransformer('all-MiniLM-L6-v2')
         self.chroma_client = chromadb.PersistentClient(path="./chroma_store")
-        self.collection = self.chroma_client.get_or_create_collection("science_chapters")
-        # Splits PDF text into overlapping 500-char chunks
-        self.splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        # ─────────────────────────────────────────────────────────────────────
-
-        self.load_chapters()
+        # Using a versioned collection so old Grade7/Science-only data is separate
+        self.collection    = self.chroma_client.get_or_create_collection("edu_llama_v2")
+        self.splitter      = RecursiveCharacterTextSplitter(
+                                chunk_size=500, chunk_overlap=50)
 
         self.tutor_prompt = """
-        You are a friendly and engaging Science tutor for 7th grade CBSE students. Your role is to:
-        - Explain scientific concepts in simple, relatable terms
-        - Use everyday examples to illustrate scientific principles
-        - Encourage scientific thinking and curiosity
-        - Help students understand the practical applications of what they learn
-        - Break down complex scientific concepts into easier parts
-        - Ask questions to ensure understanding
+        You are EduLlama, a friendly AI tutor for CBSE students in Grades 6-8.
+        - Explain concepts simply and in an age-appropriate way
+        - Use relatable, everyday examples
+        - Encourage curiosity and critical thinking
+        - Break complex topics into small, digestible parts
+        Always mention the grade and subject context in your explanation when helpful.
         """
 
-    def load_chapters(self) -> None:
-        """Load PDFs, extract text, and build ChromaDB vector index for RAG."""
+        self.load_all_content()
+
+    # ── Content loading ───────────────────────────────────────────────────────
+
+    def load_all_content(self) -> None:
+        """Walk content/{Grade}/{Subject}/ and index every PDF into ChromaDB."""
+        if not os.path.exists(CONTENT_DIR):
+            os.makedirs(CONTENT_DIR)
+            return
+
+        existing_ids  = set(self.collection.get()['ids'])
+        total_indexed = 0
+
+        for grade in sorted(os.listdir(CONTENT_DIR)):
+            grade_path = os.path.join(CONTENT_DIR, grade)
+            if not os.path.isdir(grade_path) or grade.startswith('.'):
+                continue
+
+            self.content[grade] = {}
+
+            for subject in sorted(os.listdir(grade_path)):
+                subject_path = os.path.join(grade_path, subject)
+                if not os.path.isdir(subject_path) or subject.startswith('.'):
+                    continue
+
+                self.content[grade][subject] = {}
+                pdf_files = sorted(
+                    f for f in os.listdir(subject_path) if f.endswith('.pdf'))
+
+                for pdf_file in pdf_files:
+                    chapter_name = pdf_file.replace('.pdf', '')
+                    text         = self._read_pdf(
+                                        os.path.join(subject_path, pdf_file))
+                    self.content[grade][subject][chapter_name] = text
+
+                    # ChromaDB chunk IDs encode grade + subject + chapter
+                    prefix = f"{grade}__{subject}__{chapter_name}"
+                    chunks = self.splitter.split_text(text)
+
+                    new_docs, new_ids, new_meta = [], [], []
+                    for i, chunk in enumerate(chunks):
+                        cid = f"{prefix}__chunk_{i}"
+                        if cid not in existing_ids:
+                            new_docs.append(chunk)
+                            new_ids.append(cid)
+                            new_meta.append({
+                                "grade":   grade,
+                                "subject": subject,
+                                "chapter": chapter_name,
+                            })
+
+                    if new_docs:
+                        embeddings = self.embedder.encode(new_docs).tolist()
+                        self.collection.add(
+                            documents=new_docs,
+                            embeddings=embeddings,
+                            ids=new_ids,
+                            metadatas=new_meta,
+                        )
+                        total_indexed += len(new_docs)
+                        app.logger.info(
+                            f"Indexed {len(new_docs)} chunks: "
+                            f"{grade}/{subject}/{chapter_name}")
+                    else:
+                        app.logger.info(
+                            f"Already indexed: {grade}/{subject}/{chapter_name}")
+
+        app.logger.info(
+            f"✅ Content load complete — {total_indexed} new chunks indexed.")
+
+    def _read_pdf(self, path: str) -> str:
         try:
-            if not os.path.exists(self.science_dir):
-                os.makedirs(self.science_dir)
-                app.logger.info(f"Created directory: {self.science_dir}")
-                return
-
-            pdf_files = [f for f in os.listdir(self.science_dir) if f.endswith('.pdf')]
-            if not pdf_files:
-                app.logger.warning(f"No PDF files found in {self.science_dir}")
-                return
-
-            # Get IDs already indexed so we skip re-indexing on restart
-            existing_ids = set(self.collection.get()['ids'])
-
-            for chapter_file in pdf_files:
-                chapter_name = chapter_file.replace('.pdf', '')
-                chapter_path = os.path.join(self.science_dir, chapter_file)
-                text = self._read_pdf(chapter_path)
-                self.chapters[chapter_name] = text
-
-                # Split into chunks and index only new ones
-                chunks = self.splitter.split_text(text)
-                new_docs, new_ids, new_meta = [], [], []
-                for i, chunk in enumerate(chunks):
-                    cid = f"{chapter_name}_chunk_{i}"
-                    if cid not in existing_ids:
-                        new_docs.append(chunk)
-                        new_ids.append(cid)
-                        new_meta.append({"chapter": chapter_name})
-
-                if new_docs:
-                    embeddings = self.embedder.encode(new_docs).tolist()
-                    self.collection.add(
-                        documents=new_docs,
-                        embeddings=embeddings,
-                        ids=new_ids,
-                        metadatas=new_meta
-                    )
-                    app.logger.info(f"Indexed {len(new_docs)} chunks for {chapter_name}")
-                else:
-                    app.logger.info(f"Already indexed: {chapter_name}")
-
+            reader = PdfReader(path)
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception as e:
-            app.logger.error(f"Error loading chapters: {str(e)}")
-
-    def _read_pdf(self, pdf_path: str) -> str:
-        """Extract text from a PDF file."""
-        try:
-            reader = PdfReader(pdf_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-        except Exception as e:
-            app.logger.error(f"Error reading PDF {pdf_path}: {str(e)}")
+            app.logger.error(f"PDF read error {path}: {e}")
             return ""
 
-    def ask_question(self, chapter: str, question: str,
-                     history: List[Dict] = None) -> Tuple[Optional[str], float]:
-        """RAG-powered answer: retrieves top-5 relevant passages then queries LLM."""
-        try:
-            # Step 1: Embed the question
-            q_embedding = self.embedder.encode([question]).tolist()
+    # ── Catalogue helpers ─────────────────────────────────────────────────────
 
-            # Step 2: Retrieve top-5 most relevant chunks for this chapter
-            results = self.collection.query(
-                query_embeddings=q_embedding,
-                n_results=5,
-                where={"chapter": chapter}
-            )
-            context = "\n\n".join(results['documents'][0]) if results['documents'] \
-                else self.chapters.get(chapter, '')[:3000]
+    def get_grades(self)                       -> List[str]:
+        return sorted(self.content.keys())
 
-            # Step 3: Build messages with optional conversation history
-            messages = [{'role': 'system', 'content': self.tutor_prompt}]
-            if history:
-                messages.extend(history)
-            messages.append({
-                'role': 'user',
-                'content': f"Use ONLY this context to answer:\n{context}\n\nQuestion: {question}"
-            })
+    def get_subjects(self, grade: str)         -> List[str]:
+        return sorted(self.content.get(grade, {}).keys())
 
-            # Step 4: Call Ollama
-            start_time = time.time()
-            response = ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=False)
-            time_taken = time.time() - start_time
-            return response['message']['content'].strip(), time_taken
-
-        except Exception as e:
-            app.logger.error(f"Error in ask_question: {str(e)}")
-            return None, 0
-
-    def list_chapters(self) -> List[str]:
-        """Return list of available chapter names."""
-        return list(self.chapters.keys())
+    def get_chapters(self, grade: str, subject: str) -> List[str]:
+        return sorted(self.content.get(grade, {}).get(subject, {}).keys())
 
 
-# ── Initialize ────────────────────────────────────────────────────────────────
-tutor = ScienceTutorAPI()
-
-# In-memory conversation sessions: session_id → [{"role": ..., "content": ...}]
-sessions: Dict[str, List[Dict]] = {}
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Initialise ────────────────────────────────────────────────────────────────
+tutor    = EduLlamaAPI()
+sessions: Dict[str, List[Dict]] = {}   # session_id → message history
 
 
+# ── Grade / Subject / Chapter listing ────────────────────────────────────────
+
+@app.route('/api/grades', methods=['GET'])
+def get_grades():
+    return jsonify({'status': 'success', 'grades': tutor.get_grades()})
+
+
+@app.route('/api/subjects/<grade>', methods=['GET'])
+def get_subjects(grade):
+    subjects = tutor.get_subjects(grade)
+    if not subjects:
+        return jsonify({'status': 'error', 'message': 'Grade not found'}), 404
+    return jsonify({'status': 'success', 'grade': grade, 'subjects': subjects})
+
+
+@app.route('/api/chapters/<grade>/<subject>', methods=['GET'])
+def get_chapters(grade, subject):
+    chapters = tutor.get_chapters(grade, subject)
+    return jsonify({
+        'status':  'success',
+        'grade':   grade,
+        'subject': subject,
+        'chapters': chapters,
+    })
+
+
+# Legacy endpoint — kept for backward compatibility with old Flutter code
 @app.route('/api/chapters', methods=['GET'])
-def get_chapters():
-    """Get list of all available chapters."""
-    try:
-        chapters = tutor.list_chapters()
-        return jsonify({'status': 'success', 'chapters': chapters, 'count': len(chapters)})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+def get_chapters_legacy():
+    chapters = tutor.get_chapters('Grade7', 'Science')
+    return jsonify({
+        'status':   'success',
+        'chapters': chapters,
+        'count':    len(chapters),
+    })
 
 
-@app.route('/api/chapters/<chapter_name>', methods=['GET'])
-def get_chapter_info(chapter_name):
-    """Get info about a specific chapter."""
-    try:
-        if chapter_name in tutor.chapters:
-            return jsonify({
-                'status': 'success',
-                'chapter': chapter_name,
-                'content_length': len(tutor.chapters[chapter_name])
-            })
-        return jsonify({'status': 'error', 'message': 'Chapter not found'}), 404
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# ── E1: Conversation Memory ───────────────────────────────────────────────────
+# ── E1: Conversation memory ───────────────────────────────────────────────────
 
 @app.route('/api/ask', methods=['POST'])
 def ask_question():
-    """Ask a question with full conversation memory."""
     try:
-        data = request.get_json()
-        if not data or 'chapter' not in data or 'question' not in data:
-            return jsonify({'status': 'error', 'message': 'Missing chapter or question'}), 400
-
-        chapter = data['chapter']
-        question = data['question']
+        data       = request.get_json()
+        grade      = data.get('grade',    'Grade7')
+        subject    = data.get('subject',  'Science')
+        chapter    = data.get('chapter',  '')
+        question   = data.get('question', '')
         session_id = data.get('session_id') or str(uuid.uuid4())
 
-        # Create a new session if this is a new conversation
         if session_id not in sessions:
             sessions[session_id] = [
-                {'role': 'system', 'content': tutor.tutor_prompt}
-            ]
+                {'role': 'system', 'content': tutor.tutor_prompt}]
 
-        content = tutor.chapters.get(chapter)
-        if not content:
-            return jsonify({'status': 'error', 'message': 'Chapter not found'}), 404
+        content = (tutor.content
+                   .get(grade, {})
+                   .get(subject, {})
+                   .get(chapter, ''))
 
         sessions[session_id].append({
             'role': 'user',
-            'content': f"Chapter context:\n{content[:3000]}\n\nStudent question: {question}"
+            'content': (
+                f"Grade: {grade} | Subject: {subject} | Chapter: {chapter}\n"
+                f"Context:\n{content[:3000]}\n\nQuestion: {question}"
+            ),
         })
 
         start_time = time.time()
-        response = ollama.chat(model=OLLAMA_MODEL, messages=sessions[session_id], stream=False)
+        response   = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=sessions[session_id],
+            stream=False)
         time_taken = time.time() - start_time
-        answer = response['message']['content'].strip()
+        answer     = response['message']['content'].strip()
 
-        # Save AI reply back into session for next turn
-        sessions[session_id].append({'role': 'assistant', 'content': answer})
+        sessions[session_id].append(
+            {'role': 'assistant', 'content': answer})
 
         return jsonify({
-            'status': 'success',
-            'chapter': chapter,
-            'question': question,
-            'response': answer,
+            'status':     'success',
+            'grade':      grade,
+            'subject':    subject,
+            'chapter':    chapter,
+            'question':   question,
+            'response':   answer,
             'time_taken': time_taken,
-            'session_id': session_id   # Flutter sends this back on the next message
+            'session_id': session_id,
         })
-
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/api/session/clear', methods=['POST'])
 def clear_session():
-    """Delete a conversation session (used by the 'New Chat' button)."""
     data = request.get_json()
-    sid = data.get('session_id') if data else None
+    sid  = data.get('session_id') if data else None
     if sid and sid in sessions:
         del sessions[sid]
     return jsonify({'status': 'success'})
 
 
-# ── E2: Streaming Responses ───────────────────────────────────────────────────
+# ── E2: Streaming ─────────────────────────────────────────────────────────────
 
 @app.route('/api/ask/stream', methods=['POST'])
 def ask_question_stream():
-    """Streams LLM tokens as they are generated (word-by-word like ChatGPT)."""
     try:
-        data = request.get_json()
-        chapter = data.get('chapter', '')
-        question = data.get('question', '')
+        data       = request.get_json()
+        grade      = data.get('grade',    'Grade7')
+        subject    = data.get('subject',  'Science')
+        chapter    = data.get('chapter',  '')
+        question   = data.get('question', '')
         session_id = data.get('session_id') or str(uuid.uuid4())
 
         if session_id not in sessions:
-            sessions[session_id] = [{'role': 'system', 'content': tutor.tutor_prompt}]
+            sessions[session_id] = [
+                {'role': 'system', 'content': tutor.tutor_prompt}]
 
-        content = tutor.chapters.get(chapter, '')
+        content = (tutor.content
+                   .get(grade, {})
+                   .get(subject, {})
+                   .get(chapter, ''))
+
         sessions[session_id].append({
             'role': 'user',
-            'content': f"Chapter context:\n{content[:3000]}\n\nQuestion: {question}"
+            'content': (
+                f"Grade: {grade} | Subject: {subject} | Chapter: {chapter}\n"
+                f"Context:\n{content[:3000]}\n\nQuestion: {question}"
+            ),
         })
 
         full_reply = []
 
         def generate():
             for chunk in ollama.chat(
-                model=OLLAMA_MODEL,
-                messages=sessions[session_id],
-                stream=True
-            ):
+                    model=OLLAMA_MODEL,
+                    messages=sessions[session_id],
+                    stream=True):
                 token = chunk['message']['content']
                 full_reply.append(token)
                 yield token
-            # Save complete reply to session after streaming finishes
-            sessions[session_id].append({
-                'role': 'assistant',
-                'content': ''.join(full_reply)
-            })
+            sessions[session_id].append(
+                {'role': 'assistant', 'content': ''.join(full_reply)})
 
         return Response(
             stream_with_context(generate()),
             mimetype='text/plain',
-            headers={'X-Session-Id': session_id}
+            headers={'X-Session-Id': session_id},
         )
-
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-# ── E4: AI Quiz Generation ────────────────────────────────────────────────────
+# ── E4: Quiz ──────────────────────────────────────────────────────────────────
 
 @app.route('/api/quiz', methods=['POST'])
 def generate_quiz():
-    """Generate multiple-choice quiz questions for a chapter using LLM + RAG."""
     try:
-        data = request.get_json()
+        data    = request.get_json()
+        grade   = data.get('grade',   'Grade7')
+        subject = data.get('subject', 'Science')
         chapter = data.get('chapter', '')
-        num_q = int(data.get('num_questions', 5))
+        num_q   = int(data.get('num_questions', 5))
 
-        # Use RAG to get relevant context for quiz generation
-        q_emb = tutor.embedder.encode([f"quiz questions about {chapter}"]).tolist()
+        # RAG retrieval scoped to this grade+subject+chapter
+        q_emb   = tutor.embedder.encode(
+            [f"quiz questions about {subject} {chapter}"]).tolist()
         results = tutor.collection.query(
             query_embeddings=q_emb,
             n_results=8,
-            where={"chapter": chapter}
+            where={"grade": grade, "subject": subject, "chapter": chapter},
         )
-        context = "\n\n".join(results['documents'][0]) if results['documents'] \
-            else tutor.chapters.get(chapter, '')[:3000]
+        context = (
+            "\n\n".join(results['documents'][0])
+            if results['documents']
+            else tutor.content
+                      .get(grade, {})
+                      .get(subject, {})
+                      .get(chapter, '')[:3000]
+        )
 
-        # Strict JSON-mode prompt — tells the LLM exactly what to output
-        prompt = f"""Generate {num_q} multiple-choice questions from the text below.
-Return ONLY a valid JSON array — no explanation, no markdown fences.
-Each item must follow this exact format:
-{{"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A"}}
-
-Text:
-{context}"""
+        prompt = (
+            f"Generate {num_q} multiple-choice questions about {subject} "
+            f"for {grade} students from the text below.\n"
+            "Return ONLY a valid JSON array — no explanation, no markdown fences.\n"
+            'Each item: {"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A"}\n\n'
+            f"Text:\n{context}"
+        )
 
         response = ollama.chat(
             model=OLLAMA_MODEL,
             messages=[
-                {'role': 'system', 'content': 'You are a quiz generator. Output only valid JSON arrays.'},
-                {'role': 'user', 'content': prompt}
+                {'role': 'system',
+                 'content': 'You are a quiz generator. Output only valid JSON arrays.'},
+                {'role': 'user', 'content': prompt},
             ],
-            stream=False
+            stream=False,
         )
 
         raw = response['message']['content'].strip()
-        # Strip markdown code fences if the model added them
         if raw.startswith('```'):
             raw = raw.split('```')[1]
             if raw.startswith('json'):
                 raw = raw[4:].strip()
 
-        questions = json_lib.loads(raw)
-        return jsonify({'status': 'success', 'chapter': chapter, 'questions': questions})
-
+        return jsonify({
+            'status':    'success',
+            'grade':     grade,
+            'subject':   subject,
+            'chapter':   chapter,
+            'questions': json_lib.loads(raw),
+        })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-# ── Legacy chapter-specific endpoints (kept for backward compatibility) ────────
-
-def create_chapter_specific_question(chapter_num):
-    def chapter_specific_question():
-        try:
-            data = request.get_json()
-            if not data or 'question' not in data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: question'}), 400
-            chapter_name = f'Chapter{chapter_num}'
-            question = data['question']
-            response, time_taken = tutor.ask_question(chapter_name, question)
-            if response is None:
-                return jsonify({'status': 'error',
-                                'message': f'Failed to generate response for {chapter_name}'}), 500
-            return jsonify({'status': 'success', 'chapter': chapter_name,
-                            'question': question, 'response': response, 'time_taken': time_taken})
-        except Exception as e:
-            return jsonify({'status': 'error', 'message': str(e)}), 500
-    return chapter_specific_question
-
-
-for chapter_num in range(1, 14):
-    app.add_url_rule(
-        f'/api/chapter{chapter_num}',
-        f'chapter_specific_question_{chapter_num}',
-        create_chapter_specific_question(chapter_num),
-        methods=['POST']
-    )
-
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=6000)
+    app.run(debug=True, host='0.0.0.0',
+            port=int(os.getenv('PORT', 6000)))

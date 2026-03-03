@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
-import 'screens/chapters_screen.dart';
+import 'screens/grade_screen.dart';
 
 void main() {
-  runApp(ScienceTutorApp());
+  runApp(const EduLlamaApp());
 }
 
-class ScienceTutorApp extends StatelessWidget {
+class EduLlamaApp extends StatelessWidget {
+  const EduLlamaApp({Key? key}) : super(key: key);
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: 'EduLlama',
       debugShowCheckedModeBanner: false,
-      title: 'Science Tutor',
       theme: ThemeData(
         primarySwatch: Colors.blue,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
-        useMaterial3: true,
+        fontFamily: 'Roboto',
       ),
-      home: ChaptersScreen(),
+      home: const GradeScreen(),
     );
   }
 }
