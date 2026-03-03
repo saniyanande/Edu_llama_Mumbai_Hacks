@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
+import threading
 from PyPDF2 import PdfReader
 import ollama
 import time
@@ -31,11 +32,11 @@ class EduLlamaAPI:
     def __init__(self):
         # 3-level dict:  grade → subject → chapter_name → full text
         self.content: Dict[str, Dict[str, Dict[str, str]]] = {}
+        self._indexing_done = False   # set to True once ChromaDB is ready
 
         # RAG pipeline components
         self.embedder      = SentenceTransformer('all-MiniLM-L6-v2')
         self.chroma_client = chromadb.PersistentClient(path="./chroma_store")
-        # Using a versioned collection so old Grade7/Science-only data is separate
         self.collection    = self.chroma_client.get_or_create_collection("edu_llama_v2")
         self.splitter      = RecursiveCharacterTextSplitter(
                                 chunk_size=500, chunk_overlap=50)
@@ -49,7 +50,9 @@ class EduLlamaAPI:
         Always mention the grade and subject context in your explanation when helpful.
         """
 
-        self.load_all_content()
+        # ⚡ Index PDFs in a background thread — Flask starts immediately
+        thread = threading.Thread(target=self.load_all_content, daemon=True)
+        thread.start()
 
     # ── Content loading ───────────────────────────────────────────────────────
 
@@ -118,6 +121,7 @@ class EduLlamaAPI:
 
         app.logger.info(
             f"✅ Content load complete — {total_indexed} new chunks indexed.")
+        self._indexing_done = True
 
     def _read_pdf(self, path: str) -> str:
         try:
@@ -142,6 +146,17 @@ class EduLlamaAPI:
 # ── Initialise ────────────────────────────────────────────────────────────────
 tutor    = EduLlamaAPI()
 sessions: Dict[str, List[Dict]] = {}   # session_id → message history
+
+
+# ── Health / Status ───────────────────────────────────────────────────────────
+
+@app.route('/api/status', methods=['GET'])
+def status():
+    return jsonify({
+        'status':         'ok',
+        'indexing_done':  tutor._indexing_done,
+        'grades_loaded':  list(tutor.content.keys()),
+    })
 
 
 # ── Grade / Subject / Chapter listing ────────────────────────────────────────
