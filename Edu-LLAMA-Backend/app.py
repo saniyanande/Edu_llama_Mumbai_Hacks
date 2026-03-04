@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
+import re
 import threading
 from PyPDF2 import PdfReader
 import ollama
@@ -312,64 +313,149 @@ def ask_question_stream():
 
 # ── E4: Quiz ──────────────────────────────────────────────────────────────────
 
+def _extract_json_array(text: str):
+    """Robustly extract a JSON array from LLM output, with multiple fallbacks."""
+    # 1. Strip markdown fences
+    text = re.sub(r'```(?:json)?\s*', '', text).strip()
+    text = text.replace('```', '').strip()
+
+    # 2. Find the outermost [...] block
+    start = text.find('[')
+    end   = text.rfind(']')
+    if start == -1 or end == -1:
+        raise ValueError(f"No JSON array found in LLM output:\n{text[:300]}")
+    candidate = text[start:end + 1]
+
+    # 3. Try direct parse first
+    try:
+        return json_lib.loads(candidate)
+    except json_lib.JSONDecodeError:
+        pass
+
+    # 4. Try fixing common LLM mistakes:
+    #    - trailing commas before ] or }
+    #    - single quotes instead of double quotes
+    fixed = re.sub(r',\s*([\]\}])', r'\1', candidate)   # trailing commas
+    fixed = fixed.replace("'", '"')                       # single → double quotes
+    try:
+        return json_lib.loads(fixed)
+    except json_lib.JSONDecodeError:
+        pass
+
+    # 5. Last resort: extract individual question objects via regex
+    pattern = r'\{[^{}]*"question"[^{}]*\}'
+    objects = re.findall(pattern, candidate, re.DOTALL)
+    if objects:
+        results = []
+        for obj in objects:
+            try:
+                results.append(json_lib.loads(obj))
+            except Exception:
+                pass
+        if results:
+            return results
+
+    raise ValueError(f"Could not parse JSON from LLM output:\n{text[:300]}")
+
+
 @app.route('/api/quiz', methods=['POST'])
 def generate_quiz():
     try:
         data    = request.get_json()
         grade   = data.get('grade',   'Grade7')
         subject = data.get('subject', 'Science')
-        chapter = data.get('chapter', '')
+        chapter = data.get('chapter', '')   # '' means whole-subject quiz
         num_q   = int(data.get('num_questions', 5))
 
-        # RAG retrieval scoped to this grade+subject+chapter
-        q_emb   = tutor.embedder.encode(
-            [f"quiz questions about {subject} {chapter}"]).tolist()
-        results = tutor.collection.query(
-            query_embeddings=q_emb,
-            n_results=8,
-            where={"grade": grade, "subject": subject, "chapter": chapter},
+        # ── RAG retrieval ─────────────────────────────────────────────────────
+        query_text = (
+            f"quiz questions about {subject} {chapter}"
+            if chapter else f"quiz questions about {subject}"
         )
-        context = (
-            "\n\n".join(results['documents'][0])
-            if results['documents']
-            else tutor.content
-                      .get(grade, {})
-                      .get(subject, {})
-                      .get(chapter, '')[:3000]
-        )
+        q_emb = tutor.embedder.encode([query_text]).tolist()
 
+        # Build the where-filter — omit chapter filter when chapter is empty
+        where_filter: dict = {"grade": grade, "subject": subject}
+        if chapter:
+            where_filter["chapter"] = chapter
+
+        try:
+            results = tutor.collection.query(
+                query_embeddings=q_emb,
+                n_results=min(8, tutor.collection.count() or 1),
+                where=where_filter,
+            )
+            docs = results.get('documents', [[]])
+            context = "\n\n".join(docs[0]) if docs and docs[0] else ""
+        except Exception as chroma_err:
+            app.logger.warning(f"ChromaDB query failed ({chroma_err}); falling back to raw text.")
+            context = ""
+
+        # Fall back to raw stored text if ChromaDB gave nothing
+        if not context:
+            subject_chapters = tutor.content.get(grade, {}).get(subject, {})
+            if chapter and chapter in subject_chapters:
+                context = subject_chapters[chapter][:4000]
+            elif subject_chapters:
+                # Concatenate first few chapters (subject-wide quiz)
+                combined = "\n\n".join(
+                    text for text in list(subject_chapters.values())[:3] if text
+                )
+                context = combined[:4000]
+
+        if not context:
+            return jsonify({
+                'status':  'error',
+                'message': (
+                    f"No content found for {grade}/{subject}/{chapter or '(all)'}. "
+                    "Make sure PDFs are placed in the content folder and the backend has finished indexing."
+                )
+            }), 404
+
+        # ── Prompt ────────────────────────────────────────────────────────────
+        chapter_label = f"chapter '{chapter}'" if chapter else subject
+        example = (
+            '[\n'
+            '  {"question": "What is photosynthesis?", '
+            '"options": ["A. Breathing", "B. Making food from sunlight", "C. Digestion", "D. Reproduction"], '
+            '"answer": "B"},\n'
+            '  {"question": "Which gas do plants absorb?", '
+            '"options": ["A. Oxygen", "B. Nitrogen", "C. Carbon dioxide", "D. Hydrogen"], '
+            '"answer": "C"}\n'
+            ']'
+        )
         prompt = (
-            f"Generate {num_q} multiple-choice questions about {subject} "
-            f"for {grade} students from the text below.\n"
-            "Return ONLY a valid JSON array — no explanation, no markdown fences.\n"
-            'Each item: {"question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A"}\n\n'
-            f"Text:\n{context}"
+            f"Generate exactly {num_q} multiple-choice questions about {chapter_label} "
+            f"for {grade} CBSE students, based ONLY on the text below.\n\n"
+            "OUTPUT FORMAT: Return ONLY a raw JSON array — no explanation, no markdown, no code fences.\n"
+            'Each element: {"question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "X"}\n'
+            '"answer" must be ONLY the single letter: A, B, C, or D (nothing else).\n\n'
+            f"EXAMPLE OUTPUT:\n{example}\n\n"
+            f"TEXT:\n{context[:3500]}"
         )
 
         response = ollama.chat(
             model=OLLAMA_MODEL,
             messages=[
                 {'role': 'system',
-                 'content': 'You are a quiz generator. Output only valid JSON arrays.'},
+                 'content': 'You are a quiz generator. Output ONLY a valid JSON array, nothing else.'},
                 {'role': 'user', 'content': prompt},
             ],
             stream=False,
         )
 
         raw = response['message']['content'].strip()
-        if raw.startswith('```'):
-            raw = raw.split('```')[1]
-            if raw.startswith('json'):
-                raw = raw[4:].strip()
+        questions = _extract_json_array(raw)
 
         return jsonify({
             'status':    'success',
             'grade':     grade,
             'subject':   subject,
             'chapter':   chapter,
-            'questions': json_lib.loads(raw),
+            'questions': questions,
         })
     except Exception as e:
+        app.logger.error(f"Quiz generation error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

@@ -24,7 +24,7 @@ class _GradeScreenState extends State<GradeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('EduLlama 🦙'),
+        title: const Text('EduLlama'),
         backgroundColor: Colors.blue,
         actions: [
           IconButton(
