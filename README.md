@@ -69,16 +69,11 @@ EduLlama is a local, offline-capable AI tutoring platform built for CBSE middle 
 
 ## 📽️ Demo Video
 
-<!-- Add your video recording link or embed here -->
-> 🎬 *Paste your video link here or upload to GitHub and embed it below.*
 
-<!-- https://github.com/user-attachments/assets/YOUR-VIDEO-ASSET-ID -->
 
----
+https://github.com/user-attachments/assets/8c614ec1-0d6e-4756-bc33-9b69de362c3b
 
-## 🎥 Walkthrough
 
-https://github.com/user-attachments/assets/91c64666-4ce0-4fe5-9cab-d5833fd7a29d
 
 ---
 
