@@ -27,7 +27,7 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _answered = false;
 
   String get _scoreKey =>
-      'quiz_score_${widget.grade}__${widget.subject}';
+      'quiz_score_${widget.grade}__${widget.subject}__General';
 
   String get _subjectLabel => widget.subject.replaceAll('_', ' ');
 
